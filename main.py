@@ -2,9 +2,18 @@ import discord
 from discord import app_commands
 from discord.ui import View, Button
 import requests
+import time
 
 # Bot setup
 TOKEN = ''
+
+# Cache dictionaries
+manga_cache = {}
+chapter_cache = {}
+chapter_images_cache = {}
+
+# Cache timeout (in seconds)
+CACHE_TIMEOUT = 3600  # Cache for 1 hour
 
 class MangaBot(discord.Client):
     def __init__(self):
@@ -17,17 +26,42 @@ class MangaBot(discord.Client):
 
 client = MangaBot()
 
+# Function to cache data
+def cache_data(cache, key, value):
+    cache[key] = {'timestamp': time.time(), 'data': value}
+
+# Function to get cached data
+def get_cached_data(cache, key):
+    if key in cache:
+        # Check if the cache is still valid
+        if time.time() - cache[key]['timestamp'] < CACHE_TIMEOUT:
+            return cache[key]['data']
+        else:
+            del cache[key]  # Remove expired cache
+    return None
+
 # Function to fetch manga search results from MangaDex API
 def search_manga(title):
+    cached_result = get_cached_data(manga_cache, title)
+    if cached_result:
+        print("Returning cached manga search results.")
+        return cached_result
+    
     search_url = f'https://api.mangadex.org/manga?title={title}'
     response = requests.get(search_url)
     if response.status_code == 200:
-        data = response.json()
-        return data.get('data', [])
+        data = response.json().get('data', [])
+        cache_data(manga_cache, title, data)
+        return data
     return []
 
 # Function to fetch all chapters for a specific manga
 def get_all_chapters(manga_id):
+    cached_result = get_cached_data(chapter_cache, manga_id)
+    if cached_result:
+        print("Returning cached chapter list.")
+        return cached_result
+
     chapters = []
     offset = 0
     limit = 100  # Fetch up to 100 chapters per request (max allowed by API)
@@ -49,12 +83,18 @@ def get_all_chapters(manga_id):
             return None
 
     # Sort chapters by chapter number, handling missing and non-numeric chapters
-    chapters = sorted(chapters, key=lambda x: (x['attributes']['chapter'] is None, float(x['attributes']['chapter'] or '-inf')))
+    chapters = sorted(chapters, key=lambda x: (x['attributes']['chapter'] is None, float(x['attributes']['chapter'] or 'inf')))
 
+    cache_data(chapter_cache, manga_id, chapters)
     return chapters
 
 # Function to fetch chapter images from MangaDex API
 def fetch_chapter_images(chapter_id):
+    cached_result = get_cached_data(chapter_images_cache, chapter_id)
+    if cached_result:
+        print("Returning cached chapter images.")
+        return cached_result
+
     chapter_images_url = f'https://api.mangadex.org/at-home/server/{chapter_id}'
     images_response = requests.get(chapter_images_url)
     if images_response.status_code == 200:
@@ -63,6 +103,7 @@ def fetch_chapter_images(chapter_id):
         chapter_hash = images_data['chapter']['hash']
         image_filenames = images_data['chapter']['data']
         image_urls = [f'{base_url}/data/{chapter_hash}/{filename}' for filename in image_filenames]
+        cache_data(chapter_images_cache, chapter_id, image_urls)
         return image_urls
     else:
         print(f"Error retrieving chapter images: {images_response.status_code}")
